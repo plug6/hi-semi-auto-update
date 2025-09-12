@@ -21,16 +21,14 @@ Write-Host "[3/3] Building Frontend app...`n" -ForegroundColor Yellow
 # Build React app
 npm run build
 
-# Copy dist to nginx site folder
-#Copy-Item -Recurse -Force "dist\*" "C:\apps\insight\"
+# nginx start
+if (-not (Get-Process nginx -ErrorAction SilentlyContinue)) {
+    Start-Process "D:\nginx-1.28.0\nginx.exe" -ArgumentList "-p D:\nginx-1.28.0"
+}
 
-# Optional reload
-# & "C:\nginx\nginx.exe" -s reload
-
-# Optional Checking Responce
-
+# Optional Checking Response
 $targetUrl = "http://localhost:3000"
-$response  = Invoke-WebRequest $targetUrl -UseBasicParsing -ErrorAction SilentlyContinue
+$response = Invoke-WebRequest $targetUrl -UseBasicParsing -ErrorAction SilentlyContinue
 
 Write-Host "Request Check at $targetUrl"
 $chars = "/-\|"
@@ -46,7 +44,8 @@ if ($?) {
     Write-Host "StatusCode: $($response.StatusCode)" -ForegroundColor Green
     Write-Host "StatusDescription: $($response.StatusDescription)" -ForegroundColor Green
     Write-Host ">>> Frontend deployed successfully.`n" -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "Error: $($error[0].Exception.Message)" -ForegroundColor Red
     Write-Host ">>> Frontend deployment failed.`n" -ForegroundColor Red
 }
