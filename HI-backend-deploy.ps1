@@ -19,11 +19,11 @@ npm ci
 
 Write-Host "[3/3] Restarting Backend with PM2...`n" -ForegroundColor Yellow
 # Restart with PM2
-pm2 restart "HI-api" || pm2 start src/index.js --name "HI-api"
+pm2 restart "HI-api"; if (-not $?) { pm2 start src/index.js --name "HI-api" }
 
 # Optional Checking Responce
 
-$targetUrl = "http://localhost:3000"
+$targetUrl = "http://localhost:4000"
 $response  = Invoke-WebRequest $targetUrl -UseBasicParsing -ErrorAction SilentlyContinue
 
 Write-Host "Request Check at $targetUrl"
