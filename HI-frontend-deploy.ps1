@@ -21,7 +21,7 @@ Write-Host "[3/3] Building Frontend app...`n" -ForegroundColor Yellow
 # Build React app
 npm run build
 
-# nginx start
+# nginx start if does not running
 if (-not (Get-Process nginx -ErrorAction SilentlyContinue)) {
     Start-Process "D:\nginx-1.28.0\nginx.exe" -ArgumentList "-p D:\nginx-1.28.0"
 }
