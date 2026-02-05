@@ -35,7 +35,7 @@ switch ($dbChoice) {
 
     "2" {
         Write-Host "Running DB update..." -ForegroundColor Yellow
-        node setup.js --update
+        node scripts/setup.js --update
     }
 
     "3" {
@@ -56,7 +56,7 @@ switch ($dbChoice) {
             throw "Postgres password cannot be empty."
         }
 
-        node setup.js --fresh -p $pgPassword
+        node scripts/setup.js --fresh -p $pgPassword
     }
     "4" {
         Write-Host "Available backups:" -ForegroundColor Yellow
@@ -73,11 +73,11 @@ switch ($dbChoice) {
 
         if ([string]::IsNullOrWhiteSpace($file)) {
             Write-Host "Restoring latest backup..." -ForegroundColor Yellow
-            node setup.js --restore
+            node scripts/setup.js --restore
         }
         else {
             Write-Host "Restoring from $file ..." -ForegroundColor Yellow
-            node setup.js --restore "db/backups/$file"
+            node scripts/setup.js --restore "db/backups/$file"
         }
     }
 
