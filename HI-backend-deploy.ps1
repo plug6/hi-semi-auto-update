@@ -15,7 +15,7 @@ git pull origin main
 
 Write-Host "[2/4] Installing Backend dependencies...`n" -ForegroundColor Yellow
 # Install/update deps
-npm ci
+npm i
 
 # ---------- Database ----------
 
@@ -90,9 +90,11 @@ switch ($dbChoice) {
 
 Write-Host "[4/4] Restarting Backend with PM2...`n" -ForegroundColor Yellow
 # Restart with PM2
-if (-not (pm2 restart "HI-api" -ErrorAction SilentlyContinue)) {
-    pm2 start src/index.js --name "HI-api"
-}
+pm2 restart "HI-api"
+
+# if (-not (pm2 restart "HI-api" -ErrorAction SilentlyContinue)) {
+#     pm2 start src/index.js --name "HI-api"
+# }
 
 # ---------- Health Check ----------
 # Optional Checking Responce
