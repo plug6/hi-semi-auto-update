@@ -7,7 +7,7 @@
     By default, each component checks whether the remote repo actually has
     new commits before doing anything (git fetch + compare HEAD vs origin/main).
     If there are no new commits, that component's update is skipped.
-    Use -f to force the update regardless (old behavior, no check).
+    Answering "y" to the force prompt skips the change check entirely.
 
 .EXAMPLE
     .\deploy.ps1
@@ -15,8 +15,12 @@
 
 $ErrorActionPreference = "Stop"
 
-$BackendPath  = "C:\apps\insight\backend"
-$FrontendPath = "C:\apps\insight\frontend"
+$BackendPath   = "C:\apps\insight\backend"
+$FrontendPath  = "C:\apps\insight\frontend"
+$NginxExe      = "D:\nginx-1.28.0\nginx.exe"
+$NginxPrefix   = "D:\nginx-1.28.0"
+$Pm2AppName    = "HI-api"
+$Pm2StartEntry = "src/index.js"
 
 # ============================================================
 #  Helpers
@@ -40,25 +44,115 @@ function Test-RemoteChanges {
     }
 }
 
+function Test-UncommittedChanges {
+    param([Parameter(Mandatory)][string]$Path)
+
+    Push-Location $Path
+    try {
+        $status = git status --porcelain
+        return -not [string]::IsNullOrWhiteSpace($status)
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Invoke-SafePull {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$Branch = "main"
+    )
+
+    if (Test-UncommittedChanges -Path $Path) {
+        Write-Host "WARNING: Uncommitted local changes detected in $Path." -ForegroundColor Red
+        $choice = Read-Host "Type STASH to stash them and continue, or anything else to abort"
+        if ($choice -ne "STASH") {
+            throw "Update aborted due to uncommitted changes in $Path."
+        }
+        git stash push -m "deploy.ps1 auto-stash $(Get-Date -Format o)"
+        Write-Host "Local changes stashed. Run 'git stash pop' later to restore them." -ForegroundColor Yellow
+    }
+
+    git pull origin $Branch
+}
+
+function Restart-Pm2App {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$StartEntry
+    )
+
+    $running = $false
+    try {
+        $list = pm2 jlist 2>$null | ConvertFrom-Json
+        $running = [bool]($list | Where-Object { $_.name -eq $Name })
+    } catch {
+        $running = $false
+    }
+
+    if ($running) {
+        Write-Host "Restarting existing PM2 process '$Name'..." -ForegroundColor Yellow
+        pm2 restart $Name
+    }
+    else {
+        Write-Host "PM2 process '$Name' not found. Starting it fresh..." -ForegroundColor Yellow
+        pm2 start $StartEntry --name $Name
+    }
+}
+
+function Update-NginxServing {
+    param(
+        [Parameter(Mandatory)][string]$NginxExe,
+        [Parameter(Mandatory)][string]$NginxPrefix
+    )
+
+    if (Get-Process nginx -ErrorAction SilentlyContinue) {
+        Write-Host "Nginx already running. Reloading to pick up new build..." -ForegroundColor Yellow
+        & $NginxExe -s reload -p $NginxPrefix
+    }
+    else {
+        Write-Host "Nginx not running. Starting it..." -ForegroundColor Yellow
+        Start-Process $NginxExe -ArgumentList "-p $NginxPrefix"
+    }
+}
+
 function Invoke-HealthCheck {
     param(
         [Parameter(Mandatory)][string]$Url,
-        [Parameter(Mandatory)][string]$Label
+        [Parameter(Mandatory)][string]$Label,
+        [int]$MaxAttempts = 5,
+        [int]$DelaySeconds = 2
     )
 
     Write-Host "Request Check at $Url"
-    $response = $null
-    try {
-        $response = Invoke-WebRequest $Url -UseBasicParsing -ErrorAction SilentlyContinue
-    } catch { }
 
-    $chars = "/-\|"
-    for ($i = 0; $i -lt 10; $i++) {
-        $c = $chars[$i % $chars.Length]
-        Write-Host "`b$c" -NoNewline
-        Start-Sleep -Milliseconds 200
+    $response  = $null
+    $lastError = $null
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+
+        try {
+            $response = Invoke-WebRequest $Url -UseBasicParsing -TimeoutSec 5
+            break
+        }
+        catch {
+            $lastError = $_.Exception.Message
+            $response  = $null
+        }
+
+        # spinner while waiting for the next attempt (skip after the last attempt)
+        if ($attempt -lt $MaxAttempts) {
+            $chars = "/-\|"
+            $ticks = $DelaySeconds * 5   # 5 ticks/sec * DelaySeconds, 200ms each
+            for ($i = 0; $i -lt $ticks; $i++) {
+                $c = $chars[$i % $chars.Length]
+                Write-Host "`b$c" -NoNewline
+                Start-Sleep -Milliseconds 200
+            }
+            Write-Host "`b " -NoNewline
+        }
     }
-    Write-Host "`b "   # clear spinner
+    Write-Host ""
 
     if ($response) {
         Write-Host "StatusCode: $($response.StatusCode)" -ForegroundColor Green
@@ -66,8 +160,8 @@ function Invoke-HealthCheck {
         Write-Host ">>> $Label deployed successfully.`n" -ForegroundColor Green
     }
     else {
-        Write-Host "Error: $($error[0].Exception.Message)" -ForegroundColor Red
-        Write-Host ">>> $Label deployment failed.`n" -ForegroundColor Red
+        Write-Host "Error: $lastError" -ForegroundColor Red
+        Write-Host ">>> $Label deployment failed (no response after $MaxAttempts attempts).`n" -ForegroundColor Red
     }
 }
 
@@ -95,15 +189,15 @@ function Update-Backend {
         Write-Host "New commits found. Proceeding with update.`n" -ForegroundColor Yellow
     }
     else {
-        Write-Host "Force mode (-f): skipping change check.`n" -ForegroundColor Yellow
+        Write-Host "Force mode: skipping change check.`n" -ForegroundColor Yellow
     }
 
     Write-Host "[1/4] Updating Backend repo..." -ForegroundColor Yellow
     Get-Location
-    git pull origin main
+    Invoke-SafePull -Path $BackendPath -Branch "main"
 
     Write-Host "[2/4] Installing Backend dependencies...`n" -ForegroundColor Yellow
-    npm i
+    npm ci
 
     # ---------- Database ----------
     Write-Host ""
@@ -176,11 +270,7 @@ function Update-Backend {
 
     # ---------- Restart Backend ----------
     Write-Host "[4/4] Restarting Backend with PM2...`n" -ForegroundColor Yellow
-    pm2 restart "HI-api"
-
-    # if (-not (pm2 restart "HI-api" -ErrorAction SilentlyContinue)) {
-    #     pm2 start src/index.js --name "HI-api"
-    # }
+    Restart-Pm2App -Name $Pm2AppName -StartEntry $Pm2StartEntry
 
     Invoke-HealthCheck -Url "http://localhost:4000" -Label "Backend"
 
@@ -211,12 +301,12 @@ function Update-Frontend {
         Write-Host "New commits found. Proceeding with update.`n" -ForegroundColor Yellow
     }
     else {
-        Write-Host "Force mode (-f): skipping change check.`n" -ForegroundColor Yellow
+        Write-Host "Force mode: skipping change check.`n" -ForegroundColor Yellow
     }
 
     Write-Host "[1/3] Updating Frontend repo..." -ForegroundColor Yellow
     Get-Location
-    git pull origin main
+    Invoke-SafePull -Path $FrontendPath -Branch "main"
 
     Write-Host "[2/3] Installing Frontend dependencies...`n" -ForegroundColor Yellow
     npm ci
@@ -224,9 +314,7 @@ function Update-Frontend {
     Write-Host "[3/3] Building Frontend app...`n" -ForegroundColor Yellow
     npm run build
 
-    if (-not (Get-Process nginx -ErrorAction SilentlyContinue)) {
-        Start-Process "D:\nginx-1.28.0\nginx.exe" -ArgumentList "-p D:\nginx-1.28.0"
-    }
+    Update-NginxServing -NginxExe $NginxExe -NginxPrefix $NginxPrefix
 
     Invoke-HealthCheck -Url "http://localhost:3000" -Label "Frontend"
 
